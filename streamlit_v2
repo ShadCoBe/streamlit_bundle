@@ -1,76 +1,89 @@
-import os, sys, subprocess, shlex
+# LAUNCH_app.py — furtif : ouvre le navigateur puis se ferme
+import os, sys, subprocess, socket, time, webbrowser
 
 def here() -> str:
-    """Répertoire du script .py OU de l'exe PyInstaller."""
     return getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 
 def resource_path(*parts: str) -> str:
     return os.path.join(here(), *parts)
 
-def find_file(candidates):
-    """Retourne le 1er chemin existant parmi les candidats."""
-    for p in candidates:
-        if p and os.path.exists(p):
-            return p
-    return None
+def wait_for_port(host: str, port: int, timeout: float = 20.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=1.0):
+                return True
+        except OSError:
+            time.sleep(0.2)
+    return False
+
+def open_url(url: str):
+    try:
+        if webbrowser.open_new(url):
+            return
+    except Exception:
+        pass
+    if os.name == "nt":
+        try:
+            os.startfile(url)  # type: ignore[attr-defined]
+            return
+        except Exception:
+            pass
+        try:
+            subprocess.Popen(["cmd", "/c", "start", "", url], shell=True)
+            return
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     base = here()
-    # IMPORTANT : se placer à côté de l'exe / du script
     os.chdir(base)
 
-    # --- Résolution robuste de app.py ---
-    # 1) à côté de l'exe
-    cand1 = resource_path("app.py")
-    # 2) à côté du launcher (si on l'a appelé via un autre cwd)
-    cand2 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.py")
-    # 3) sous dossier "app" ou "src" (fréquent)
-    cand3 = resource_path("src", "app.py")
-    cand4 = resource_path("app", "app.py")
-    # 4) recherche récursive (dernier recours, coûte peu au lancement)
-    found = find_file([cand1, cand2, cand3, cand4])
-    if not found:
-        for root, _, files in os.walk(base):
-            if "app.py" in files:
-                found = os.path.join(root, "app.py")
-                break
+    app_path = resource_path("app.py")
+    host, port = "localhost", 8502
+    url = f"http://{host}:{port}"
 
-    if not found:
-        print("[launcher] ERREUR: app.py introuvable.")
-        print(f"[launcher] J'ai cherché autour de: {base}")
-        sys.exit(1)
-
-    app_path = os.path.abspath(found)
-    print(f"[launcher] app_path = {app_path}")
-
-    # --- Vérifs des ressources utiles (non bloquant) ---
-    logo = resource_path("assets", "cacib.PNG")
-    db   = resource_path("data", "backend_DQ.db")
-    print(f"[launcher] logo exists={os.path.exists(logo)}   path={logo}")
-    print(f"[launcher] db   exists={os.path.exists(db)}     path={db}")
-
-    # --- Flags Streamlit (rapides + headless .exe) ---
+    # Flags Streamlit (pas de watcher, plus rapide)
     flags = {
-        "server.headless": "true",
-        "server.address": "127.0.0.1",
-        "server.port": "8502",
+        "server.headless": "true",                   # on ouvre nous-mêmes le navigateur
+        "server.address": host,
+        "server.port": str(port),
         "browser.gatherUsageStats": "false",
         "server.runOnSave": "false",
         "server.fileWatcherType": "none",
         "server.enableCORS": "false",
         "server.enableXsrfProtection": "false",
     }
-    cli_flags = " ".join(f"--{k}={v}" for k, v in flags.items())
 
-    # --- Environnement propre ---
     env = os.environ.copy()
-    env["PYTHONPATH"] = base           # évite imports dupliqués
+    env["PYTHONPATH"] = base
     env["STREAMLIT_LAUNCHED_FROM_EXE"] = "1"
 
-    # --- Lancement en sous-processus (isolation) ---
-    cmd = [sys.executable, "-m", "streamlit", "run", app_path] + [f"--{k}={v}" for k, v in flags.items()]
-    try:
-        subprocess.run(cmd, check=True, cwd=base, env=env)
-    except subprocess.CalledProcessError as e:
-        print("[launcher] ERREUR streamlit:", e)
-        sys.exit(e.returncode)
+    # Utiliser pythonw.exe si possible (Windows) pour éviter la console
+    py_exec = sys.executable
+    if os.name == "nt" and py_exec.lower().endswith("python.exe"):
+        pyw = py_exec[:-10] + "pythonw.exe"
+        if os.path.exists(pyw):
+            py_exec = pyw
+
+    cmd = [py_exec, "-m", "streamlit", "run", app_path] + [f"--{k}={v}" for k, v in flags.items()]
+
+    # Démarre Streamlit en arrière-plan, sans bloquer et en silencieux
+    kwargs = dict(cwd=base, env=env)
+    if os.name == "nt":
+        # Masquer la fenêtre du sous-processus
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        kwargs["startupinfo"] = si
+        # Couper la sortie
+        kwargs["stdout"] = subprocess.DEVNULL
+        kwargs["stderr"] = subprocess.DEVNULL
+
+    subprocess.Popen(cmd, **kwargs)
+
+    # Attendre que le serveur démarre puis ouvrir le navigateur
+    if wait_for_port(host, port, timeout=25):
+        open_url(url)
+
+    # Fermer immédiatement le launcher
+    sys.exit(0)
