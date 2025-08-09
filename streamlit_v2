@@ -1,6 +1,5 @@
-# LAUNCH_app.py — safe-lean
-import os, sys, logging
-from streamlit.web import bootstrap
+# LAUNCH_app.py — iso/subprocess (empêche les superpositions)
+import os, sys, subprocess, shlex
 
 def resource_path(rel: str) -> str:
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -10,39 +9,28 @@ if __name__ == "__main__":
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     os.chdir(base)
 
-    # Logging léger
-    logging.basicConfig(
-        filename=os.path.join(base, "run.log"),
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-    )
-    log = logging.getLogger("launcher")
-
     app_path = resource_path("app.py")
-    if not os.path.exists(app_path):
-        log.error("app.py introuvable: %s", app_path)
-        raise SystemExit(1)
 
-    # (facultatif) vérifs rapides d’assets critiques
-    for rel in ("assets/cacib.PNG", "data/backend_DQ.db"):
-        p = resource_path(rel)
-        if not os.path.exists(p):
-            log.warning("Ressource manquante: %s", p)
-
-    flag_options = {
-        "server.headless": True,
+    # options streamlit pour un .exe
+    flags = {
+        "server.headless": "true",
         "server.address": "127.0.0.1",
-        "server.port": 8502,
-        "browser.gatherUsageStats": False,
-        "server.runOnSave": False,
+        "server.port": "8502",
+        "browser.gatherUsageStats": "false",
+        "server.runOnSave": "false",
         "server.fileWatcherType": "none",
-        "server.enableCORS": False,
-        "server.enableXsrfProtection": False,
+        "server.enableCORS": "false",
+        "server.enableXsrfProtection": "false",
     }
 
+    # transforme flags en arguments CLI: --key=value
+    cli_flags = " ".join(f"--{k}={v}" for k, v in flags.items())
+
+    # lance streamlit dans un process séparé → pas de pollution/imports partagés
+    cmd = f"{sys.executable} -m streamlit run {shlex.quote(app_path)} {cli_flags}"
     try:
-        log.info("Démarrage Streamlit: %s", app_path)
-        bootstrap.run(app_path, "", [], flag_options)
-    except Exception:
-        log.exception("Echec lancement Streamlit")
-        raise
+        subprocess.run(cmd, check=True, shell=True, cwd=base)
+    except subprocess.CalledProcessError as e:
+        # si tu veux, remets un print simple au lieu d'un input bloquant
+        print("Erreur de lancement Streamlit:", e)
+        sys.exit(e.returncode)
