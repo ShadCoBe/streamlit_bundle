@@ -1,0 +1,80 @@
+# LAUNCH_app.py — ouvre automatiquement le navigateur quand le serveur est prêt
+import os, sys, subprocess, socket, time, webbrowser
+
+def here() -> str:
+    return getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+
+def resource_path(*parts: str) -> str:
+    return os.path.join(here(), *parts)
+
+def wait_for_port(host: str, port: int, timeout: float = 20.0) -> bool:
+    """Attend que (host, port) soit connectable, max 'timeout' secondes."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=1.0):
+                return True
+        except OSError:
+            time.sleep(0.2)
+    return False
+
+def open_url(url: str):
+    """Ouvre l'URL avec plusieurs fallbacks (Windows-friendly)."""
+    try:
+        # 1) webbrowser standard
+        if webbrowser.open_new(url):
+            return
+    except Exception:
+        pass
+    # 2) Fallback Windows: start via shell
+    if os.name == "nt":
+        try:
+            os.startfile(url)  # type: ignore[attr-defined]
+            return
+        except Exception:
+            pass
+        try:
+            subprocess.Popen(["cmd", "/c", "start", "", url], shell=True)
+            return
+        except Exception:
+            pass
+    # 3) Dernier recours: affiche simplement l'URL en console
+    print(f"➡ Ouvre manuellement : {url}")
+
+if __name__ == "__main__":
+    base = here()
+    os.chdir(base)
+
+    app_path = resource_path("app.py")
+    host = "localhost"      # ou "127.0.0.1"
+    port = 8502
+    url  = f"http://{host}:{port}"
+
+    # Flags: on peut laisser headless=true (puisqu'on ouvre nous-mêmes le navigateur)
+    flags = {
+        "server.headless": "true",              # on ouvre nous-mêmes l'onglet
+        "server.address": host,
+        "server.port": str(port),
+        "browser.gatherUsageStats": "false",
+        "server.runOnSave": "false",
+        "server.fileWatcherType": "none",
+        "server.enableCORS": "false",
+        "server.enableXsrfProtection": "false",
+    }
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = base
+    env["STREAMLIT_LAUNCHED_FROM_EXE"] = "1"
+
+    cmd = [sys.executable, "-m", "streamlit", "run", app_path] + [f"--{k}={v}" for k, v in flags.items()]
+    # Démarre sans bloquer
+    proc = subprocess.Popen(cmd, cwd=base, env=env)
+
+    # Attendre que le serveur soit UP puis ouvrir le navigateur
+    if wait_for_port(host, port, timeout=25):
+        open_url(url)
+    else:
+        print(f"[launcher] Le serveur ne répond pas encore sur {url}…")
+
+    # (optionnel) ne pas attendre la fin du process
+    # proc.wait()
