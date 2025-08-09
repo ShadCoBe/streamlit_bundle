@@ -1,4 +1,4 @@
-# LAUNCH_app.py — iso/subprocess (empêche les superpositions)
+# LAUNCH_app.py — subprocess + env propre
 import os, sys, subprocess, shlex
 
 def resource_path(rel: str) -> str:
@@ -11,7 +11,6 @@ if __name__ == "__main__":
 
     app_path = resource_path("app.py")
 
-    # options streamlit pour un .exe
     flags = {
         "server.headless": "true",
         "server.address": "127.0.0.1",
@@ -22,15 +21,16 @@ if __name__ == "__main__":
         "server.enableCORS": "false",
         "server.enableXsrfProtection": "false",
     }
-
-    # transforme flags en arguments CLI: --key=value
     cli_flags = " ".join(f"--{k}={v}" for k, v in flags.items())
 
-    # lance streamlit dans un process séparé → pas de pollution/imports partagés
-    cmd = f"{sys.executable} -m streamlit run {shlex.quote(app_path)} {cli_flags}"
+    # Env propre: limite le PYTHONPATH et passe un marqueur à l'app
+    env = os.environ.copy()
+    env["PYTHONPATH"] = base
+    env["STREAMLIT_LAUNCHED_FROM_EXE"] = "1"
+
+    cmd = f"{shlex.quote(sys.executable)} -m streamlit run {shlex.quote(app_path)} {cli_flags}"
     try:
-        subprocess.run(cmd, check=True, shell=True, cwd=base)
+        subprocess.run(cmd, check=True, shell=False, cwd=base, env=env)
     except subprocess.CalledProcessError as e:
-        # si tu veux, remets un print simple au lieu d'un input bloquant
         print("Erreur de lancement Streamlit:", e)
         sys.exit(e.returncode)
