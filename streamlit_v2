@@ -1,12 +1,12 @@
-# LAUNCH_app.py — furtif + logs + URL personnalisée
-import os, sys, subprocess, socket, time, webbrowser
+# LAUNCH_app.py — furtif + ouverture unique (anti-boucle)
+import os, sys, subprocess, socket, time, webbrowser, tempfile
 
-# === PERSONNALISATION ICI ===
-HOST = "localhost"   # ou "127.0.0.1"
+# ====== PARAMS ======
+HOST = "localhost"
 PORT = 8502
-PUBLIC_URL = None     # ex: "http://monapp.local" si tu as un DNS/hosts/proxy
-OPEN_PUBLIC_URL = True  # si PUBLIC_URL défini, ouvrir cette URL (sinon localhost:PORT)
-# ============================
+OPEN_PUBLIC_URL = None   # ex: "http://monapp.local" si tu as DNS/hosts/proxy
+TIMEOUT_READY = 25.0     # secondes d'attente du serveur
+# ====================
 
 def here() -> str:
     return getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -14,7 +14,7 @@ def here() -> str:
 def resource_path(*parts: str) -> str:
     return os.path.join(here(), *parts)
 
-def wait_for_port(host: str, port: int, timeout: float = 25.0) -> bool:
+def wait_for_port(host: str, port: int, timeout: float) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
@@ -23,6 +23,13 @@ def wait_for_port(host: str, port: int, timeout: float = 25.0) -> bool:
         except OSError:
             time.sleep(0.2)
     return False
+
+def port_is_open(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.8):
+            return True
+    except OSError:
+        return False
 
 def open_url(url: str):
     try:
@@ -41,19 +48,28 @@ def open_url(url: str):
             return
         except Exception:
             pass
-    print(f"[launcher] Ouvre manuellement : {url}")
+    # fallback silencieux : rien
 
 if __name__ == "__main__":
     base = here()
     os.chdir(base)
 
     app_path = resource_path("app.py")
-    url_local = f"http://{HOST}:{PORT}"
-    url_to_open = PUBLIC_URL if (PUBLIC_URL and OPEN_PUBLIC_URL) else url_local
+    local_url = f"http://{HOST}:{PORT}"
+    url_to_open = OPEN_PUBLIC_URL or local_url
 
-    # Flags Streamlit (rapides, pas de watcher)
+    # --- Flag d'ouverture unique lié au port ---
+    flag_path = os.path.join(tempfile.gettempdir(), f"streamlit_opened_{PORT}.flag")
+    # Si le port n'est pas ouvert, on réinitialise le flag pour autoriser une future ouverture
+    if not port_is_open(HOST, PORT) and os.path.exists(flag_path):
+        try:
+            os.remove(flag_path)
+        except Exception:
+            pass
+
+    # --- Prépare lancement streamlit ---
     flags = {
-        "server.headless": "true",           # on ouvre le navigateur nous-mêmes
+        "server.headless": "true",           # on ouvre nous-mêmes le navigateur
         "server.address": HOST,
         "server.port": str(PORT),
         "browser.gatherUsageStats": "false",
@@ -67,7 +83,7 @@ if __name__ == "__main__":
     env["PYTHONPATH"] = base
     env["STREAMLIT_LAUNCHED_FROM_EXE"] = "1"
 
-    # Utiliser pythonw.exe (Windows) pour éviter toute console
+    # Utiliser pythonw.exe si dispo (Windows) pour ne pas afficher de console
     py_exec = sys.executable
     if os.name == "nt" and py_exec.lower().endswith("python.exe"):
         pyw = py_exec[:-10] + "pythonw.exe"
@@ -76,31 +92,26 @@ if __name__ == "__main__":
 
     cmd = [py_exec, "-m", "streamlit", "run", app_path] + [f"--{k}={v}" for k, v in flags.items()]
 
-    # LOGS -> run.log (stdout+stderr)
-    log_path = os.path.join(base, "run.log")
-    log_file = open(log_path, "a", encoding="utf-8")  # ne pas fermer tout de suite (process enfant l’utilise)
-
-    # Démarre Streamlit en arrière-plan, silencieux, sans fenêtre
-    kwargs = dict(cwd=base, env=env, stdout=log_file, stderr=subprocess.STDOUT)
+    # Lance en arrière-plan, furtif
+    kwargs = dict(cwd=base, env=env)
     if os.name == "nt":
         si = subprocess.STARTUPINFO()
         si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         kwargs["startupinfo"] = si
+        kwargs["stdout"] = subprocess.DEVNULL
+        kwargs["stderr"] = subprocess.DEVNULL
 
     subprocess.Popen(cmd, **kwargs)
 
-    # Attendre que le serveur démarre puis ouvrir le navigateur
-    if wait_for_port(HOST, PORT, timeout=25):
-        open_url(url_to_open)
-    else:
-        # on log l’info si jamais
-        try:
-            log_file.write(f"\n[launcher] Server not reachable on {url_local}\n")
-            log_file.flush()
-        except Exception:
-            pass
-
-    # fermer le launcher (le process Streamlit continue)
-    # on NE ferme PAS log_file ici; il est utilisé par le sous-processus
-    # le système libérera le handle quand le sous-processus se termine
+    # Attends que le serveur soit prêt
+    if wait_for_port(HOST, PORT, TIMEOUT_READY):
+        # Ouvre **une seule fois** par “cycle de serveur”
+        if not os.path.exists(flag_path):
+            try:
+                with open(flag_path, "w", encoding="utf-8") as f:
+                    f.write("opened")
+            except Exception:
+                pass
+            open_url(url_to_open)
+    # Le launcher se ferme immédiatement (le serveur continue)
     sys.exit(0)
