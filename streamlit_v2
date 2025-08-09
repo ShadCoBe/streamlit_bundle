@@ -1,16 +1,55 @@
-# LAUNCH_app.py — subprocess + env propre
 import os, sys, subprocess, shlex
 
-def resource_path(rel: str) -> str:
-    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base, rel)
+def here() -> str:
+    """Répertoire du script .py OU de l'exe PyInstaller."""
+    return getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+
+def resource_path(*parts: str) -> str:
+    return os.path.join(here(), *parts)
+
+def find_file(candidates):
+    """Retourne le 1er chemin existant parmi les candidats."""
+    for p in candidates:
+        if p and os.path.exists(p):
+            return p
+    return None
 
 if __name__ == "__main__":
-    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    base = here()
+    # IMPORTANT : se placer à côté de l'exe / du script
     os.chdir(base)
 
-    app_path = resource_path("app.py")
+    # --- Résolution robuste de app.py ---
+    # 1) à côté de l'exe
+    cand1 = resource_path("app.py")
+    # 2) à côté du launcher (si on l'a appelé via un autre cwd)
+    cand2 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.py")
+    # 3) sous dossier "app" ou "src" (fréquent)
+    cand3 = resource_path("src", "app.py")
+    cand4 = resource_path("app", "app.py")
+    # 4) recherche récursive (dernier recours, coûte peu au lancement)
+    found = find_file([cand1, cand2, cand3, cand4])
+    if not found:
+        for root, _, files in os.walk(base):
+            if "app.py" in files:
+                found = os.path.join(root, "app.py")
+                break
 
+    if not found:
+        print("[launcher] ERREUR: app.py introuvable.")
+        print(f"[launcher] J'ai cherché autour de: {base}")
+        sys.exit(1)
+
+    app_path = os.path.abspath(found)
+    print(f"[launcher] app_path = {app_path}")
+
+    # --- Vérifs des ressources utiles (non bloquant) ---
+    logo = resource_path("assets", "cacib.PNG")
+    db   = resource_path("data", "backend_DQ.db")
+    print(f"[launcher] logo exists={os.path.exists(logo)}   path={logo}")
+    print(f"[launcher] db   exists={os.path.exists(db)}     path={db}")
+
+    # --- Flags Streamlit (rapides + headless .exe) ---
     flags = {
         "server.headless": "true",
         "server.address": "127.0.0.1",
@@ -23,14 +62,15 @@ if __name__ == "__main__":
     }
     cli_flags = " ".join(f"--{k}={v}" for k, v in flags.items())
 
-    # Env propre: limite le PYTHONPATH et passe un marqueur à l'app
+    # --- Environnement propre ---
     env = os.environ.copy()
-    env["PYTHONPATH"] = base
+    env["PYTHONPATH"] = base           # évite imports dupliqués
     env["STREAMLIT_LAUNCHED_FROM_EXE"] = "1"
 
-    cmd = f"{shlex.quote(sys.executable)} -m streamlit run {shlex.quote(app_path)} {cli_flags}"
+    # --- Lancement en sous-processus (isolation) ---
+    cmd = [sys.executable, "-m", "streamlit", "run", app_path] + [f"--{k}={v}" for k, v in flags.items()]
     try:
-        subprocess.run(cmd, check=True, shell=False, cwd=base, env=env)
+        subprocess.run(cmd, check=True, cwd=base, env=env)
     except subprocess.CalledProcessError as e:
-        print("Erreur de lancement Streamlit:", e)
+        print("[launcher] ERREUR streamlit:", e)
         sys.exit(e.returncode)
