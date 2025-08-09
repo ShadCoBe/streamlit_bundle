@@ -1,45 +1,48 @@
-import os, sys, logging 
+# LAUNCH_app.py — safe-lean
+import os, sys, logging
 from streamlit.web import bootstrap
 
-def resource_path(rel):
+def resource_path(rel: str) -> str:
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, rel)
 
 if __name__ == "__main__":
-    # --- Logging dans le dossier de l'exe
-    log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run.log")
-    logging.basicConfig(filename=log_path, level=logging.DEBUG, format="%(asctime)s %(levelname)s %(message)s")
-    print(f"[launcher] Log file: {log_path}")
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    os.chdir(base)
+
+    # Logging léger
+    logging.basicConfig(
+        filename=os.path.join(base, "run.log"),
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+    log = logging.getLogger("launcher")
 
     app_path = resource_path("app.py")
-    print(f"[launcher] app_path = {app_path}  exists={os.path.exists(app_path)}")
+    if not os.path.exists(app_path):
+        log.error("app.py introuvable: %s", app_path)
+        raise SystemExit(1)
 
-    # Vérifier les ressources clés
-    logo = resource_path("assets/cacib.PNG")
-    db   = resource_path("data/backend_DQ.db")
-    print(f"[launcher] logo exists={os.path.exists(logo)}   path={logo}")
-    print(f"[launcher] db   exists={os.path.exists(db)}     path={db}")
+    # (facultatif) vérifs rapides d’assets critiques
+    for rel in ("assets/cacib.PNG", "data/backend_DQ.db"):
+        p = resource_path(rel)
+        if not os.path.exists(p):
+            log.warning("Ressource manquante: %s", p)
 
     flag_options = {
-        # ne pas ouvrir le navigateur automatiquement
-        "browser.gatherUsageStats": False,
         "server.headless": True,
         "server.address": "127.0.0.1",
-        "server.port": 8502,  # change de 8501 -> 8502 pour éviter un conflit
-        # éviter les relances et watchers dans le répertoire _MEIPASS
+        "server.port": 8502,
+        "browser.gatherUsageStats": False,
         "server.runOnSave": False,
         "server.fileWatcherType": "none",
-        # (optionnel selon ton environnement)
         "server.enableCORS": False,
         "server.enableXsrfProtection": False,
     }
 
     try:
+        log.info("Démarrage Streamlit: %s", app_path)
         bootstrap.run(app_path, "", [], flag_options)
-    except Exception as e:
-        import traceback
-        msg = traceback.format_exc()
-        print("[launcher] FATAL:", msg)
-        logging.exception("launcher failed")
-        # laisse la console ouverte pour lire l’erreur
-        input("Press Enter to close...")
+    except Exception:
+        log.exception("Echec lancement Streamlit")
+        raise
